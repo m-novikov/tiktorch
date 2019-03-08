@@ -43,6 +43,7 @@ jobs:
       - run:
           name: run tests
           command: |
+            env
             . /opt/conda/etc/profile.d/conda.sh
             conda activate "${TEST_ENV_NAME}"
             python -m pytest

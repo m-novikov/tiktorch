@@ -45,7 +45,7 @@ jobs:
           command: |
             . /opt/conda/etc/profile.d/conda.sh
             conda activate "${TEST_ENV_NAME}"
-            python -m pytest
+            python -m pytest -s
 
       - store_artifacts:
           path: test-reports

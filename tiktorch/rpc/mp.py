@@ -195,9 +195,8 @@ class Message:
         self.id = id
 
 
-class Signal:
-    def __init__(self, payload):
-        self.payload = payload
+class Shutdown:
+    pass
 
 
 class MethodCall(Message):
@@ -353,7 +352,7 @@ class MPServer:
                         fut = self._call_method(msg)
                     except Stop:
                         self.logger.debug("[id: %s] Shutdown", msg.id)
-                        self._send(Signal(b"shutdown"))
+                        self._send(Shutdown())
                         self._send(self._sentinel)
                         break
 

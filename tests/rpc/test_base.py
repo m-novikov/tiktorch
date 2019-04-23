@@ -1,7 +1,7 @@
 from time import sleep
 from threading import Thread, enumerate as tenum
 from functools import wraps
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 
 import pytest
 import zmq
@@ -19,6 +19,8 @@ from tiktorch.rpc.base import (
 from tiktorch.rpc.connections import InprocConnConf
 from tiktorch.rpc.interface import exposed, RPCInterface, get_exposed_methods
 from tiktorch.rpc.exceptions import Shutdown, Timeout, Canceled, CallException
+from tiktorch.rpc.types import MethodCall, MethodReturn, Result, Cancellation
+from tiktorch.rpc.mp import Message
 
 
 class Iface(RPCInterface):
@@ -388,3 +390,240 @@ def test_isfutureret():
         return
 
     isfutureret(foo)
+
+
+import enum
+
+
+class Message:
+    pass
+
+
+from typing import Optional
+
+
+Seconds = int
+
+
+class IServerTransport:
+    def poll(self, timeout: Optional[Seconds] = None) -> bool:
+        # Check if there is an inbound message available
+        raise NotImplementedError()
+
+    def send(self, msg: Message):
+        # Send result
+        raise NotImplementedError()
+
+    def recv(self):
+        # Recieve inbound message
+        raise NotImplementedError()
+
+
+class Client:
+    def poll(self, timeout: Optional[Seconds] = None):
+        # Check if there is an inbound message available
+        raise NotImplementedError()
+
+    def send(self, msg: Message):
+        # Send message call
+        raise NotImplementedError()
+
+    def recv(self):
+        # Recieve inbound message
+        raise NotImplementedError()
+
+
+import queue
+import threading
+
+
+CLIENT_ID = b"_client"
+
+
+class ZMQSerializer:
+    def serialize(self, msg):
+        pass
+
+    def deserialize(self, msg):
+        pass
+
+
+from tiktorch.rpc.serialization import serialize, deserialize
+
+
+class ZMQServerTransport(IServerTransport):
+    def __init__(self, sock) -> None:
+        # Router socket
+        self.socket = sock  # inbound
+
+        self._send_queue = queue.Queue()
+        self._recv_queue = queue.Queue()
+        self._flow = DataFlowWorker(self._recv_queue, self._send_queue, self.socket)
+        self._flow.start()
+
+    def send(self, msg):
+        msg_serialized = list(serialize(msg))
+        self._send_queue.put([CLIENT_ID, *msg_serialized])
+
+    def recv(self):
+        ident, *frames = self._recv_queue.get()
+        return deserialize(iter(frames))
+
+    def close(self):
+        self._flow.stop()
+
+
+class DataFlowWorker:
+    def __init__(self, in_queue: queue.Queue, out_queue: queue.Queue, socket: zmq.Socket):
+        self._in_queue = in_queue
+        self._out_queue = out_queue
+        self._stop = threading.Event()
+        self._worker = threading.Thread(target=self._work)
+        self._socket = socket
+
+    def start(self):
+        self._worker.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _work(self):
+        while True:
+            if self._stop.is_set():
+                break
+
+            evt = self._socket.poll(flags=zmq.POLLIN | zmq.POLLOUT)
+
+            if evt & zmq.POLLIN:
+                msg = self._socket.recv_multipart(copy=False)
+                self._in_queue.put(msg)
+
+            if evt & zmq.POLLOUT:
+                try:
+                    msg = self._out_queue.get_nowait()
+                    self._socket.send_multipart(msg)
+                except queue.Empty:
+                    pass
+                except Exception as e:
+                    logger.exception("Error during socket send")
+
+
+class ZMQClientTransport(IServerTransport):
+    def __init__(self, sock) -> None:
+        self.socket = sock  # inbound
+        self._send_queue = queue.Queue()
+        self._recv_queue = queue.Queue()
+
+        self._flow = DataFlowWorker(self._recv_queue, self._send_queue, self.socket)
+        self._flow.start()
+
+    def send(self, msg):
+        msg_serialized = list(serialize(msg))
+        self._send_queue.put(msg_serialized)
+
+    def recv(self):
+        frames = self._recv_queue.get()
+        return deserialize(iter(frames))
+
+    def close(self):
+        self._flow.stop()
+
+
+class TestZMQTransport:
+    @pytest.fixture
+    def ctx(self):
+        return zmq.Context()
+
+    @pytest.fixture
+    def zmq_srv_tr(self, ctx):
+        sock = ctx.socket(zmq.ROUTER)
+        sock.bind("inproc://rep")
+
+        tr = ZMQServerTransport(sock)
+
+        yield tr
+
+        tr.close()
+
+    @pytest.fixture(
+        params=[
+            MethodCall(b"testid", "methodname", (b"arg1", True), None),
+            MethodReturn(b"testid", Result.OK(b"testvalue")),
+            Cancellation(b"testid"),
+        ]
+    )
+    def msg(self, request):
+        return request.param
+
+    @pytest.fixture
+    def zmq_client_tr(self, ctx):
+        sock = ctx.socket(zmq.DEALER)
+        sock.identity = CLIENT_ID
+        sock.connect("inproc://rep")
+
+        tr = ZMQClientTransport(sock)
+
+        yield tr
+
+        tr.close()
+
+    def test_client_send_srv_recv(self, zmq_srv_tr, zmq_client_tr, msg):
+        zmq_client_tr.send(msg)
+        msg = zmq_srv_tr.recv()
+        assert msg == msg
+
+    def test_srv_poll(self, zmq_srv_tr, zmq_client_tr, msg):
+        assert not zmq_srv_tr.poll(timeout=0.1), "Nothing sent, so recv shouldn't be ready"
+
+        zmq_client_tr.send(msg)
+
+        assert zmq_srv_tr.poll(timeout=0.1)
+
+    def test_srv_send_client_recv(self, zmq_srv_tr, zmq_client_tr, msg):
+        zmq_srv_tr.send(msg)
+        msg = zmq_client_tr.recv()
+        assert msg == msg
+
+    def test_stress_threading(self, zmq_srv_tr, zmq_client_tr, msg):
+        import time
+        import random
+
+        def _send(message):
+            duration = random.random() / 1000
+            time.sleep(duration)
+            zmq_srv_tr.send(message)
+
+        def _recv():
+            duration = random.random() / 1000
+            time.sleep(duration)
+            return zmq_client_tr.recv()
+
+        with ThreadPoolExecutor(max_workers=20) as e:
+            fs = []
+            for _ in range(100):
+                fs.append(e.submit(_send, msg))
+                fs.append(e.submit(_recv))
+
+            result = wait(fs, timeout=5)
+            assert result.not_done == set()
+            assert len(result.done) == 200
+
+            for f in result.done:
+                # check for exceptions
+                f.result()
+
+    @pytest.fixture
+    def router(self, ctx):
+        router = ctx.socket(zmq.ROUTER)
+        router.bind("inproc://router")
+
+        return router
+
+    @pytest.fixture
+    def dealer(self, ctx):
+        dealer = ctx.socket(zmq.DEALER)
+        # TODO: Move socket creation to transport
+        dealer.setsockopt(zmq.IDENTITY, CLIENT_ID)
+        dealer.connect("inproc://router")
+
+        return dealer

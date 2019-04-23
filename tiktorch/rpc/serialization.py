@@ -1,13 +1,21 @@
 import zmq
+import traceback
 
 from collections import namedtuple
 from logging import getLogger
 from typing import Any, List, Generic, Iterator, TypeVar, Type, Mapping, Callable, Dict
 from zmq.utils import jsonapi
 
+from .types import Cancellation, Signal, MethodCall, MethodReturn, Result
+
 
 T = TypeVar("T")
 logger = getLogger(__name__)
+
+
+def _exc_to_string(exc):
+    exc_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    return "\n".join(exc_lines)
 
 
 class ISerializer(Generic[T]):
@@ -244,3 +252,95 @@ class BoolSerializer(ISerializer[bool]):
     def deserialize(cls, frames: FusedFrameIterator) -> bool:
         frame = next(frames)
         return bool(frame.bytes)
+
+
+@serializer_for(tuple, tag=b"tuple")
+class TupleSerializer(ISerializer[tuple]):
+    @classmethod
+    def serialize(cls, obj: tuple) -> Iterator[zmq.Frame]:
+        b_len = len(obj).to_bytes(length=2, byteorder="big")
+        yield zmq.Frame(b_len)
+        for elem in obj:
+            yield from serialize(elem)
+
+    @classmethod
+    def deserialize(cls, frames: FusedFrameIterator) -> bool:
+        len_frame = next(frames)
+        len_ = int.from_bytes(len_frame.bytes, byteorder="big")
+        return tuple(deserialize(frames) for _ in range(len_))
+
+
+@serializer_for(MethodCall, tag=b"_call")
+class MethodCallSerializer(ISerializer[MethodCall]):
+    @classmethod
+    def serialize(cls, obj: MethodCall) -> Iterator[zmq.Frame]:
+        yield zmq.Frame(obj.id)
+        yield zmq.Frame(obj.method_name.encode("utf-8"))
+        assert isinstance(obj.args, tuple)
+        yield from serialize(obj.args)
+
+    @classmethod
+    def deserialize(cls, frames: FusedFrameIterator) -> MethodCall:
+        frame_id = next(frames)
+        frame_name = next(frames)
+        method_name = frame_name.bytes.decode("utf-8")
+        args = deserialize(frames)
+        return MethodCall(frame_id.bytes, method_name, args, None)
+
+
+@serializer_for(Result, tag=b"_res")
+class ResultSerializer(ISerializer[Result]):
+    ERR = b"ERR"
+    OK = b"OK"
+
+    @classmethod
+    def serialize(cls, obj: Result) -> Iterator[zmq.Frame]:
+        if obj.is_err:
+            yield zmq.Frame(cls.ERR)
+            exc_str = _exc_to_string(obj.error)
+            yield zmq.Frame(exc_str.encode("utf-8"))
+
+        else:
+            yield zmq.Frame(cls.OK)
+            yield from serialize(obj.value)
+
+    @classmethod
+    def deserialize(cls, frames: FusedFrameIterator) -> Result:
+        marker_frm = next(frames)
+        if marker_frm.bytes == cls.OK:
+            value = deserialize(frames)
+            return Result.OK(value)
+
+        elif marker_frm.bytes == cls.ERR:
+            formatted_frm = next(frames)
+            decoded = formatted_frm.bytes.decode("utf-8")
+            return Result.Error(Exception(decoded))
+
+        else:
+            raise DeserializationError("Unknown marker for Result type")
+
+
+@serializer_for(MethodReturn, tag=b"_ret")
+class MethodReturnSerializer(ISerializer[MethodReturn]):
+    @classmethod
+    def serialize(cls, obj: MethodReturn) -> Iterator[zmq.Frame]:
+        yield zmq.Frame(obj.id)
+        yield from serialize(obj.result)
+
+    @classmethod
+    def deserialize(cls, frames: FusedFrameIterator) -> MethodReturn:
+        frame_id = next(frames)
+        result = deserialize(frames)
+        return MethodReturn(frame_id.bytes, result)
+
+
+@serializer_for(Cancellation, tag=b"_cancel")
+class MethodReturnSerializer(ISerializer[Cancellation]):
+    @classmethod
+    def serialize(cls, obj: Cancellation) -> Iterator[zmq.Frame]:
+        yield zmq.Frame(obj.id)
+
+    @classmethod
+    def deserialize(cls, frames: FusedFrameIterator) -> Cancellation:
+        frame_id = next(frames)
+        return Cancellation(frame_id.bytes)

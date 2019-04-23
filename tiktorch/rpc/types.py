@@ -5,6 +5,76 @@ from concurrent.futures import Future, CancelledError
 from typing import Generic, TypeVar, Callable, Tuple, List, Type, _GenericAlias
 
 
+class Result:
+    __slots__ = ("_value", "_err")
+
+    def __init__(self, *, value=None, err=None):
+        self._value = value
+        self._err = err
+
+    @property
+    def value(self):
+        if self.is_err:
+            raise self._err
+
+        return self._value
+
+    @property
+    def error(self):
+        return self._err
+
+    @property
+    def is_ok(self):
+        return self._err is None
+
+    @property
+    def is_err(self):
+        return not self.is_ok
+
+    @classmethod
+    def OK(cls, value):
+        return cls(value=value)
+
+    @classmethod
+    def Error(cls, err):
+        return cls(err=err)
+
+    def to_future(self, fut):
+        if self.is_err:
+            fut.set_exception(self.error)
+        else:
+            fut.set_result(self.value)
+
+
+class Message:
+    def __init__(self, id_):
+        self.id = id
+
+
+class Signal:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+class MethodCall(Message):
+    def __init__(self, id_, method_name, args, kwargs):
+        self.id = id_
+        self.method_name = method_name
+        self.args = args
+        self.kwargs = kwargs
+
+
+class Cancellation(Message):
+    def __init__(self, id_):
+        self.id = id_
+
+
+class MethodReturn(Message):
+    def __init__(self, id_, result: Result):
+        self.id = id_
+        self.result = result
+
+
 T = TypeVar("T")
 S = TypeVar("S")
 

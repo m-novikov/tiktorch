@@ -8,6 +8,7 @@ from typing import Iterator
 import zmq
 
 from tiktorch.rpc.serialization import ISerializer, DeserializationError, SerializerRegistry, serialize, deserialize
+from tiktorch.rpc import types
 
 
 class Foo:
@@ -124,3 +125,66 @@ def test_tuple_serialization():
     data = (1, 2, 3, 42, 5)
     serialized = serialize(data)
     assert deserialize(serialized) == data
+
+
+def test_method_call_serialization():
+    call = types.MethodCall(b"testid", "testmethod", (b"a", None, True), None)
+    serialized = serialize(call)
+    deserialized = deserialize(serialized)
+
+    assert isinstance(deserialized, types.MethodCall)
+    assert deserialized.id == b"testid"
+    assert deserialized.method_name == "testmethod"
+    assert deserialized.args == (b"a", None, True)
+
+
+def test_method_call_serialization_empty_args():
+    call = types.MethodCall(b"testid", "testmethod", tuple(), None)
+    serialized = serialize(call)
+    deserialized = deserialize(serialized)
+    assert deserialized.id == b"testid"
+    assert deserialized.method_name == "testmethod"
+    assert deserialized.args == tuple()
+
+
+def test_result_with_value():
+    res = types.Result.OK(b"testval")
+
+    serialized = serialize(res)
+    deserialized = deserialize(serialized)
+
+    assert isinstance(deserialized, types.Result)
+    assert deserialized.is_ok
+    assert deserialized.value == b"testval"
+
+
+def test_result_with_exception():
+    res = None
+
+    try:
+        1 / 0
+    except ZeroDivisionError as e:
+        res = types.Result.Error(e)
+
+    assert res.is_err
+
+    serialized = serialize(res)
+    deserialized = deserialize(serialized)
+
+    assert isinstance(deserialized, types.Result)
+    assert deserialized.is_err
+
+    with pytest.raises(Exception) as e:
+        assert deserialized.value == b"testval"
+        assert "ZeroDivision" in e.message
+
+
+def test_method_return():
+    ret = types.MethodReturn(b"testid", types.Result.OK(b"value"))
+
+    serialized = serialize(ret)
+    deserialized = deserialize(serialized)
+
+    assert isinstance(deserialized, types.MethodReturn)
+    assert deserialized.id == b"testid"
+    assert deserialized.result.value == b"value"

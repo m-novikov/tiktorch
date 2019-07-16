@@ -10,7 +10,7 @@ package:
    {{tagged_version}}
 
 source:
-  path: ../
+  git_url: ../
 
 build:
   number: 1

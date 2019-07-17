@@ -17,3 +17,4 @@ dependencies:
   - black
   - isort
   - conda-build
+  - anaconda-client

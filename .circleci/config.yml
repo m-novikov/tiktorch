@@ -40,7 +40,11 @@ jobs:
             - /opt/conda/envs
           key: v4-dependencies-{{ checksum "environment.yml" }}
 
-    black_check:
+  black_check:
+    docker:
+      - image: continuumio/miniconda3
+    working_directory: ~/repo
+    steps:
       - restore_cache:
           keys:
             - v1-repo-{{ .Environment.CIRCLE_SHA1 }}
@@ -55,7 +59,11 @@ jobs:
             conda activate tiktorch-server-env
             black --check ./
 
-    tests:
+  tests:
+    docker:
+      - image: continuumio/miniconda3
+    working_directory: ~/repo
+    steps:
       - restore_cache:
           keys:
             - v1-repo-{{ .Environment.CIRCLE_SHA1 }}
@@ -70,7 +78,11 @@ jobs:
             conda activate tiktorch-server-env
             python -m pytest
 
-    isort:
+  isort:
+    docker:
+      - image: continuumio/miniconda3
+    working_directory: ~/repo
+    steps:
       - restore_cache:
           keys:
             - v1-repo-{{ .Environment.CIRCLE_SHA1 }}

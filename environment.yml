@@ -16,3 +16,4 @@ dependencies:
   - pytest=4.3.0
   - black
   - isort
+  - conda-build

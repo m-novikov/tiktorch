@@ -18,3 +18,4 @@ dependencies:
   - isort
   - conda-build
   - anaconda-client
+  - bump2version

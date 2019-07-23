@@ -8,6 +8,41 @@ from torch.utils.data.dataset import Dataset
 from tiktorch.tiktypes import LabeledTikTensorBatch, TikTensor, TikTensorBatch
 
 
+from torch.utils.data import Sampler
+
+
+class DynamicWeightedRandomSampler(Sampler):
+    r"""Samples elements from [0,..,len(weights)-1] with given probabilities (weights).
+
+    Arguments:
+        weights (sequence)   : a sequence of weights, not necessary summing up to one
+        num_samples (int): number of samples to draw
+        replacement (bool): if ``True``, samples are drawn with replacement.
+            If not, they are drawn without replacement, which means that when a
+            sample index is drawn for a row, it cannot be drawn again for that row.
+    """
+
+    def __init__(self, dataset, replacement=True):
+        if not isinstance(num_samples, int) or num_samples <= 0:
+            raise ValueError(f"num_samples should be a positive int value, but got f{num_samples}")
+
+        if not isinstance(replacement, bool):
+            raise ValueError("replacement should be a boolean value, but got " "replacement={}".format(replacement))
+
+        self._dataset = dataset
+        self.replacement = replacement
+
+    def __iter__(self):
+        while True:
+            weights = self._dataset.get_weights()
+            num_samples = len(self._dataset)
+
+            yield from torch.multinomial(weights, num_samples, self.replacement)
+
+    def __len__(self):
+        return len(self._dataset)
+
+
 class DynamicDataset(Dataset):
     """
     A torch dataset based on a dict

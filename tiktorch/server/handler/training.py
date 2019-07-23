@@ -59,7 +59,7 @@ from tiktorch.tiktypes import LabeledTikTensorBatch, TikTensor, TikTensorBatch
 from tiktorch.types import ModelState
 from tiktorch.utils import add_logger, get_error_msg_for_invalid_config
 
-from .datasets import DynamicDataset
+from .datasets import DynamicDataset, DynamicWeightedRandomSampler
 
 try:
     # from: https://github.com/pytorch/pytorch/issues/973#issuecomment-346405667
@@ -451,9 +451,7 @@ class TrainingProcess(ITraining):
                 )
                 ds = self.datasets[TRAINING]
                 if ds:
-                    self.loader_kwargs[TRAINING]["sampler"] = WeightedRandomSampler(
-                        ds.get_weights(), len(ds), replacement=True
-                    )
+                    self.loader_kwargs[TRAINING]["sampler"] = DynamicWeightedRandomSampler(ds, replacement=True)
                 else:
                     self.loader_kwargs[TRAINING].pop("sampler", None)
 

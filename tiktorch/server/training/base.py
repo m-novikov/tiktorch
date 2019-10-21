@@ -116,7 +116,7 @@ def make_datasets(config):
 
 
 class ConfigBuilder:
-    DEFAULTS = {
+    _DEFAULTS = {
         LOSS_CRITERION_CONFIG: {"method": "MSELoss"},
         NUM_ITERATIONS_MAX: 0,
         NUM_ITERATIONS_PER_UPDATE: 1,
@@ -127,19 +127,19 @@ class ConfigBuilder:
     def build(cls, config):
         result = {}
 
-        for key, default in cls.DEFAULTS.items():
+        for key, default in cls._DEFAULTS.items():
             if key not in config[TRAINING]:
                 config[TRAINING][key] = default
 
-        for key, default in cls.DEFAULTS.items():
+        for key, default in cls._DEFAULTS.items():
             value = config[TRAINING].get(key, default)
 
             if key == LOSS_CRITERION_CONFIG:
                 kwargs = dict(value)
                 method = kwargs.pop("method")
-                criterion_class = cls._resove_loss(method)
-                criterion_config = {"method": LossWrapper(criterion_class(**kwargs), SparseOneHot())}
-                result[INFERNO_NAMES.get(key, key)] = criterion_config
+                loss_class = cls._resove_loss(method)
+                loss_config = {"method": LossWrapper(loss_class(**kwargs), SparseOneHot())}
+                result[INFERNO_NAMES.get(key, key)] = loss_config
             else:
                 result[INFERNO_NAMES.get(key, key)] = value
 
@@ -153,28 +153,21 @@ class ConfigBuilder:
         if not isinstance(loss_name, str):
             raise ValueError(f"Expected string as loss_name, got {loss_name}")
 
-        criterion_class = getattr(torch.nn, loss_name, None)
-        if criterion_class is None:
+        loss_class = getattr(torch.nn, loss_name, None)
+        if loss_class is None:
             # Look for it in extensions
-            criterion_class = getattr(inferno_criteria, loss_name, None)
+            loss_class = getattr(inferno_criteria, loss_name, None)
 
-        if criterion_class is None:
+        if loss_class is None:
             raise Exception(f"Criterion {loss_name} not found.")
 
-        return criterion_class
+        return loss_class
 
 
 class TrainingProcess(ITraining):
     """
     Process to run an inferno trainer instance to train a neural network. This instance is used for validation as well.
     """
-
-    trainer_defaults = {
-        LOSS_CRITERION_CONFIG: {"method": "MSELoss"},
-        NUM_ITERATIONS_MAX: 0,
-        NUM_ITERATIONS_PER_UPDATE: 1,
-        OPTIMIZER_CONFIG: {"method": "Adam"},
-    }
 
     def __init__(self, config: dict, model: torch.nn.Module, optimizer_state: bytes = b""):
         self._worker = None
@@ -207,33 +200,10 @@ class TrainingProcess(ITraining):
         if self.optimizer_state:
             optimizer = self.create_optimizer(self.optimizer_state)
             if optimizer is not None:
+                print("HEY BUILT")
                 self.trainer.build_optimizer(optimizer)
 
         self._worker = worker.TrainingWorker(self.trainer)
-
-    def create_trainer_config(self) -> Dict:
-        trainer_config = {}
-        for key, default in self.trainer_defaults.items():
-            value = self.config[TRAINING].get(key, default)
-            if key == LOSS_CRITERION_CONFIG:
-                kwargs = dict(value)
-                method = kwargs.pop("method")
-                assert isinstance(method, str)
-                # Look for criteria in torch
-                criterion_class = getattr(torch.nn, method, None)
-                if criterion_class is None:
-                    # Look for it in extensions
-                    criterion_class = getattr(inferno_criteria, method, None)
-                assert criterion_class is not None, "Criterion {} not found.".format(method)
-                criterion_config = {"method": LossWrapper(criterion_class(**kwargs), SparseOneHot())}
-                trainer_config[INFERNO_NAMES.get(key, key)] = criterion_config
-            else:
-                trainer_config[INFERNO_NAMES.get(key, key)] = value
-
-        trainer_config[INFERNO_LOGGER_CONFIG] = {"name": "InfernoTrainer"}
-        trainer_config[INFERNO_MAX_NUM_EPOCHS] = "inf"
-
-        return trainer_config
 
     def create_optimizer(self, optimizer_state: bytes) -> Optional[torch.optim.Optimizer]:
         try:
@@ -241,7 +211,7 @@ class TrainingProcess(ITraining):
             optimizer_class: Type[torch.optim.Optimizer] = getattr(torch.optim, kwargs.pop("method"))
             optimizer = optimizer_class(self.model.parameters(), **kwargs)
             try:
-                optimizer.load_state_dict(torch.load(io.BytesIO(optimizer_state), map_location=self.base_device))
+                optimizer.load_state_dict(torch.load(io.BytesIO(optimizer_state), map_location="cpu"))
             except Exception as e:
                 self.logger.warning(
                     "Could not load optimizer state due to %s.\nCreating new optimizer from %s",

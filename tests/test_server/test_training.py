@@ -65,6 +65,71 @@ def test_training(tiny_model_2d):
         training.shutdown()
 
 
+from numpy.testing import assert_equal
+
+
+def _assert_equal(v1, v2):
+    if isinstance(v1, dict) and isinstance(v2, dict):
+        assert v1.keys() == v2.keys()
+        for key in v1:
+            _assert_equal(v1[key], v2[key])
+
+    elif isinstance(v1, torch.Tensor) and isinstance(v2, torch.Tensor):
+        assert_equal(v1.numpy(), v2.numpy())
+
+    else:
+        assert v1 == v2
+
+
+def test_training_restore_optimizer_state(tiny_model_2d):
+    config = tiny_model_2d["config"]
+    config["num_iterations_per_update"] = 10
+    in_channels = config["input_channels"]
+    model = TinyConvNet2d(in_channels=in_channels)
+    training = TrainingProcess(config=config, model=model)
+    try:
+        training.set_devices([torch.device("cpu")])
+        data = TikTensorBatch(
+            [
+                TikTensor(torch.zeros(in_channels, 15, 15), ((1,), (1,))),
+                TikTensor(torch.ones(in_channels, 15, 15), ((2,), (2,))),
+            ]
+        )
+        labels = TikTensorBatch(
+            [
+                TikTensor(torch.ones(in_channels, 15, 15, dtype=torch.uint8), ((1,), (1,))),
+                TikTensor(torch.full((in_channels, 15, 15), 2, dtype=torch.uint8), ((2,), (2,))),
+            ]
+        )
+        training.update_dataset("training", data, labels)
+        before_training_state = training.get_state()
+        training.resume_training()
+        training.wait_for_idle().result()
+
+        after_training_state = training.get_state()
+        assert before_training_state.optimizer_state != after_training_state.optimizer_state
+
+        new_training = TrainingProcess(config=config, model=model, optimizer_state=after_training_state.optimizer_state)
+        assert len(training.trainer.optimizer.state_dict()["state"]) == len(
+            new_training.trainer.optimizer.state_dict()["state"]
+        )
+
+        zipped = zip(
+            training.trainer.optimizer.state_dict()["state"].values(),
+            new_training.trainer.optimizer.state_dict()["state"].values(),
+        )
+        for t1, t2 in zipped:
+            _assert_equal(t1, t2)
+            # print(t1)
+            # assert_equal(t1.numpy(), t2.numpy())
+
+        # new_state = new_training.get_state()
+
+        # assert after_training_state.optimizer_state == new_state.optimizer_state
+    finally:
+        training.shutdown()
+
+
 def test_training_in_proc(tiny_model_2d, log_queue):
     config = tiny_model_2d["config"]
     config["num_iterations_per_update"] = 10
@@ -238,3 +303,102 @@ class TestConfigBuilder:
         loss_conf = config.get("criterion_config")
         assert loss_conf
         assert isinstance(loss_conf["method"].criterion, torch.nn.CrossEntropyLoss)
+
+
+from hamcrest.core.base_matcher import BaseMatcher
+from hamcrest.core.helpers.hasmethod import hasmethod
+
+
+class IsGivenDayOfWeek(BaseMatcher):
+    def __init__(self, day):
+        self.day = day  # Monday is 0, Sunday is 6
+
+    def _matches(self, item):
+        print("MACHES CALLED")
+        if not hasmethod(item, "weekday"):
+            return False
+        return item.weekday() == self.day
+
+    def describe_to(self, description):
+        day_as_string = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        description.append_text("calendar date falling on ").append_text(day_as_string[self.day])
+
+
+import numpy
+
+
+class Comparator:
+    _registry = {}
+
+    @classmethod
+    def register(cls, left_type, right_type, comparator):
+        cls._registry[(left_type, right_type)] = comparator
+
+    def __init__(self, left, right):
+        self._left = left
+        self._right = right
+
+    def evaluate(self, ctx):
+        compare_fn = self._registry.get((type(self._left), type(self._right)))
+
+        if compare_fn is not None:
+            ctx.evaluate(lambda: compare_fn(self._left, self._right))
+        else:
+            assert self._left == self._right
+
+
+def _numpy_compare(val, other):
+    return numpy.array_equal(val, other)
+
+
+Comparator.register(numpy.ndarray, numpy.ndarray, _numpy_compare)
+
+
+class Context:
+    def __init__(self):
+        self.negated = False
+
+    def evaluate(self, bool_fn):
+        if not self.negated:
+            assert bool_fn()
+        else:
+            assert not bool_fn()
+
+
+class expect:
+    def __init__(self, val):
+        self._val = val
+        self._ctx = Context()
+
+    @property
+    def to(self):
+        return self
+
+    @property
+    def be(self):
+        return self
+
+    @property
+    def have(self):
+        return self
+
+    @property
+    def not_(self):
+        self._ctx.negated = True
+        return self
+
+    def equal(self, other):
+        Comparator(self._val, other).evaluate(self._ctx)
+        return self
+
+    def a(self, type_):
+        assert isinstance(self._val, type_)
+        return self
+
+    an = a
+
+
+def test_1():
+    expect(numpy.array([1, 2])).to.not_.be.equal(numpy.array([1, 2]))
+    expect(1).to.be.equal(1)
+    expect(1).to.be.an(int)

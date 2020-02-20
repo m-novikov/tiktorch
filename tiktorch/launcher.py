@@ -24,12 +24,13 @@ class AlreadyRunningError(Exception):
 
 
 class ConnConf:
-    def __init__(self, proto, addr, port1, port2, timeout):
+    def __init__(self, proto, addr, port1, port2, timeout, grpc_chan=None):
         self.protocol = proto
         self.addr = addr
         self.port1 = port1
         self.port2 = port2
         self.timeout = timeout
+        self.grpc_chan = grpc_chan
 
     def get_timeout(self):
         return self.timeout
@@ -47,25 +48,24 @@ class _ZMQClientWrapper:
 
 
 class _GRPCClientWrapper:
-    def __init__(self, conn_str):
+    def __init__(self, conn_str, chan):
         self.__conn_str = conn_str
+        self.__chan = chan
 
     def ping(self):
         try:
-            with grpc.insecure_channel(self.__conn_str) as chan:
-                client = inference_pb2_grpc.FlightControlStub(chan)
-                client.Ping(inference_pb2.Empty())
-
-                return True
+            grpc.channel_ready_future(self.__chan).result(timeout=20)
+            client = inference_pb2_grpc.FlightControlStub(self.__chan)
+            resp = client.Ping(inference_pb2.Empty())
+            print("RESPONSE", resp)
+            return resp is not None
         except Exception as e:
             return False
 
     def shutdown(self):
-        with grpc.insecure_channel(self.__conn_str) as chan:
-            client = inference_pb2_grpc.FlightControlStub(chan)
-            client.Shutdown(inference_pb2.Empty())
-
-            return True
+        client = inference_pb2_grpc.FlightControlStub(self.__chan)
+        client.Shutdown(inference_pb2.Empty())
+        return True
 
 
 def client_factory(conn_conf: ConnConf):
@@ -75,7 +75,7 @@ def client_factory(conn_conf: ConnConf):
         )
         return _ZMQClientWrapper(Client(IFlightControl(), tcp_conf))
     elif conn_conf.protocol == "grpc":
-        return _GRPCClientWrapper(f"{conn_conf.addr}:{conn_conf.port1}")
+        return _GRPCClientWrapper(f"{conn_conf.addr}:{conn_conf.port1}", chan=conn_conf.grpc_chan)
 
     raise ValueError("Unknown protocol {protocol}")
 
@@ -126,15 +126,16 @@ class IServerLauncher:
         return self._ping()
 
     def start(self, ping_interval: int = HEARTBEAT_INTERVAL, kill_timeout: int = KILL_TIMEOUT, *, dummy: bool = False):
-        self._start_server(dummy, kill_timeout)
+        chan = self._start_server(dummy, kill_timeout)
         self._state = self.State.Running
 
         self._stop = threading.Event()
-        self._heartbeat_worker = threading.Thread(
-            target=self._hearbeat, args=(ping_interval,), name=f"{type(self).__name__}.HeartbeatWorker"
-        )
-        self._heartbeat_worker.daemon = True
-        self._heartbeat_worker.start()
+        #self._heartbeat_worker = threading.Thread(
+        #    target=self._hearbeat, args=(ping_interval,), name=f"{type(self).__name__}.HeartbeatWorker"
+        #)
+        #self._heartbeat_worker.daemon = True
+        #self._heartbeat_worker.start()
+        return chan
 
     def stop(self):
         if self._state == self.State.Stopped:
@@ -149,7 +150,7 @@ class IServerLauncher:
             pass
 
         self._state = self.State.Stopped
-        self._heartbeat_worker.join()
+        #self._heartbeat_worker.join()
 
 
 def wait(done, interval=0.1, max_wait=10):
@@ -207,8 +208,11 @@ class LocalServerLauncher(IServerLauncher):
 
         self._process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
 
+        print("WAIT")
+
         try:
             wait(self.is_server_running)
+            print("WAIT DONE")
         except Timeout:
             raise Exception("Failed to start local TikTorchServer")
 

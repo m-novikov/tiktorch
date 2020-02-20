@@ -111,6 +111,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer, inference_pb2_grpc
         return session
 
     def Ping(self, request: inference_pb2.Empty, context):
+        print("PIGN RECV")
         return inference_pb2.Empty()
 
     def Shutdown(self, request: inference_pb2.Empty, context):
